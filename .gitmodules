@@ -1,0 +1,3 @@
+[submodule "hsproject"]
+	path = hsproject
+	url = ./hsproject
