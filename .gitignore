@@ -1,0 +1,7 @@
+*.pyc
+*.png
+*.mp4
+GOES_Extract.o*
+GOES_Extract.e*
+cset/*
+*.log

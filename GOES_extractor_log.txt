@@ -1,0 +1,81 @@
+Working on date 2015-07-01 00:00:00+00:00
+getting trajectory 1
+0.06%      ETA 11:54:21      time left: 122 seconds      
+getting trajectory 2
+0.11%      ETA 06:06:37      time left: 18.2 hours        
+getting trajectory 3
+0.17%      ETA 12:12:32      time left: 24.3 hours        
+getting trajectory 4
+0.22%      ETA 15:22:21      time left: 27.4 hours        
+getting trajectory 5
+0.28%      ETA 17:16:37      time left: 29.3 hours        
+getting trajectory 6
+0.33%      ETA 18:41:20      time left: 30.7 hours        
+getting trajectory 7
+0.39%      ETA 19:41:09      time left: 31.7 hours        
+getting trajectory 8
+0.44%      ETA 20:24:27      time left: 32.4 hours        
+getting trajectory 9
+0.50%      ETA 20:56:15      time left: 32.9 hours        
+getting trajectory 10
+0.56%      ETA 21:19:56      time left: 33.3 hours        
+getting trajectory 11
+0.61%      ETA 21:39:44      time left: 33.6 hours        
+getting trajectory 12
+0.67%      ETA 21:59:42      time left: 33.9 hours        
+getting trajectory 13
+0.72%      ETA 22:16:44      time left: 34.2 hours        
+getting trajectory 14
+0.78%      ETA 22:29:18      time left: 34.3 hours        
+getting trajectory 15
+0.83%      ETA 22:38:48      time left: 34.5 hours        
+getting trajectory 16
+0.89%      ETA 22:48:40      time left: 34.6 hours        
+getting trajectory 17
+0.94%      ETA 22:58:19      time left: 34.8 hours        
+getting trajectory 18
+1.00%      ETA 23:07:54      time left: 34.9 hours        
+getting trajectory 19
+1.06%      ETA 23:18:50      time left: 35.1 hours        
+getting trajectory 20
+1.11%      ETA 23:28:06      time left: 35.2 hours        
+getting trajectory 21
+1.17%      ETA 23:42:35      time left: 35.4 hours        
+getting trajectory 22
+1.22%      ETA 23:48:00      time left: 35.5 hours        
+getting trajectory 23
+1.28%      ETA 23:53:42      time left: 35.6 hours        
+getting trajectory 24
+1.33%      ETA 00:01:07      time left: 35.7 hours        
+getting trajectory 25
+1.39%      ETA 00:03:17      time left: 35.7 hours        
+getting trajectory 26
+1.44%      ETA 00:06:00      time left: 35.7 hours        
+getting trajectory 27
+1.50%      ETA 00:08:55      time left: 35.7 hours        
+getting trajectory 28
+1.56%      ETA 00:11:48      time left: 35.8 hours        
+getting trajectory 29
+1.61%      ETA 00:14:33      time left: 35.8 hours        
+getting trajectory 30
+1.67%      ETA 00:17:56      time left: 35.8 hours        
+Finished GOES read
+Working on trajectory 0
+Working on trajectory 1
+Working on trajectory 2
+Working on trajectory 3
+Working on trajectory 4
+Working on trajectory 5
+Working on trajectory 6
+Working on trajectory 7
+Working on trajectory 8
+Working on trajectory 9
+Working on trajectory 10
+Working on trajectory 11
+Working on trajectory 12
+Working on trajectory 13
+Working on trajectory 14
+Working on trajectory 15
+Working on trajectory 16
+Working on trajectory 17
+Working on trajectory 18
