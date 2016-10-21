@@ -7,6 +7,8 @@ Goal: filter out all bad trajectories, return a list of only the ones that
 go the right way (i.e. southwest)
 
 """
+#import matplotlib
+#matplotlib.use('Qt4Agg')
 import utils
 import glob
 import os
@@ -49,7 +51,7 @@ def trajectory_12_hour_check(traj):
     for i in range(len(traj_12)-1):
         origin = (traj_12.lat[i], traj_12.lon[i])
         dest = (traj_12.lat[i+1], traj_12.lon[i+1])
-        if angle(origin, dest) < 160 or angle(origin, dest) > 290:
+        if angle(origin, dest) < 140 or angle(origin, dest) > 290:
             return False
     else:
         return True
@@ -75,7 +77,7 @@ def trajectory_direction_check(traj):
         return True
 
 
-def make_list_of_trajectories(testfunction, output=True):
+def DEP_make_list_of_trajectories(testfunction, output=True):
     trajectory_folder = utils.trajectory_dir
     flist = glob.glob(os.path.join(trajectory_folder, 'tdump*'))
 
@@ -101,26 +103,69 @@ def make_list_of_trajectories(testfunction, output=True):
                 {'good_trajectories': save_dict})
     return save_dict
 
+
+def tdump_name_2_date(tname):
+    tname = os.path.basename(tname)
+
+
+def make_list_of_trajectories(testfunction, output=True):
+    trajectory_folder = utils.trajectory_dir
+    flist = glob.glob(os.path.join(trajectory_folder, 'tdump*'))
+
+    good_traj, bad_traj = 0, 0
+
+    save_dict = {}
+
+    file_list = []
+    good_traj_list = []
+    for f in flist:
+        tdump = utils.read_tdump(f)
+        t_group = tdump.groupby('tnum')
+        for key in t_group.groups.keys():
+            traj = t_group.get_group(key)
+            fname = "{}-{:02}-2deg.nc".format(os.path.basename(f)[5:13], key)
+            file_list.append(fname)
+            if testfunction(traj):
+                save_dict[fname] = '1'
+                good_traj_list.append(1)
+                good_traj += 1
+            else:
+                bad_traj += 1
+                save_dict[fname] = '0'
+                good_traj_list.append(0)
+
+    if output:
+        file_list = np.array(file_list, dtype=object)
+        savemat(output,
+               {'file_list': file_list, 'good_traj': good_traj_list})
+#                {'good_trajectories': save_dict})
+    return save_dict
+
+
 def plot_good_bad_trajectories(matfile):
     trajectory_folder = utils.trajectory_dir
     flist = glob.glob(os.path.join(trajectory_folder, 'tdump*'))
 
     good_traj, bad_traj = 0, 0
-    mat_cont = loadmat(matfile,
-                       squeeze_me=True)['good_trajectories']
+    file_list = loadmat(matfile, squeeze_me=True)['file_list']
+    good_list = loadmat(matfile, squeeze_me=True)['good_traj']
 #    oct_struct['tdump20150825H0000']
 
-    fig_g, ax_g, m_ax_g = utils.make_map_plot()
-    fig_b, ax_b, m_ax_b = utils.make_map_plot()
+    fig_good, ax_g, m_ax_g = utils.make_map_plot()
+    fig_bad, ax_b, m_ax_b = utils.make_map_plot()
 
     for f in flist:
         tdump = utils.read_tdump(f)
         t_group = tdump.groupby('tnum')
-        good_list = np.array(mat_cont[os.path.basename(f)].tolist())
+#        good_list = np.array(mat_cont[os.path.basename(f)].tolist())
         for key in t_group.groups.keys():
+
+            ncfile = r'{}-{:02}-2deg.nc'.format(os.path.basename(f)[5:13], key)
+            indx = np.argwhere(file_list == ncfile).squeeze().item()
+            good = good_list[indx]
             traj = t_group.get_group(key)
-            color  = cm.rainbow(np.random.uniform(0,1))
-            if key in good_list:
+            color = cm.rainbow(np.random.uniform(0,1))
+            if good:
                 good_traj += 1
                 utils.plot_single(t=traj, m=m_ax_g, c=color)
             else:
@@ -131,15 +176,18 @@ def plot_good_bad_trajectories(matfile):
     ax_b.set_title('CSET bad trajectories, {} total'.format(bad_traj),
                    y=1.08)
 
+    fig_good.savefig('/home/disk/p/jkcm/good.png')
+    fig_bad.savefig('/home/disk/p/jkcm/bad.png')
 
 if __name__ == "__main__":
 
-    matfile = '/home/disk/eos4/jkcm/Data/CSET/Lagrangian_project/good_trajectories_12.mat'
+#    matfile = '/home/disk/eos4/jkcm/Data/CSET/Lagrangian_project/good_trajectories_12.mat'
 
-#    save_dict = make_list_of_trajectories(testfunction=trajectory_12_hour_check,
-#                                          output=True)
+    savename = '/home/disk/eos4/jkcm/Data/CSET/Lagrangian_project/good_trajectories_morewest.mat'
+    save_dict = make_list_of_trajectories(testfunction=trajectory_12_hour_check,
+                                          output=savename)
 
 
-    plot_good_bad_trajectories(matfile)
+    plot_good_bad_trajectories(savename)
 
 

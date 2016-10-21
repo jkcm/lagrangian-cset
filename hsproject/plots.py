@@ -8,9 +8,11 @@ from matplotlib import dates
 import netCDF4 as nc4
 from read_tdump import read_tdump
 import os
+import pandas as pd
 from util import get_trajectory_data, datetime64_to_datetime,\
                  create_cloud_droplet_concentration_array, closest_val,\
                  TrajectoryError
+print "pandas version: {}".format(pd.__version__)
 
 
 def pcolormesh_cloud_particle_size():
@@ -144,13 +146,12 @@ def is_night(lat, lon, dataset):
     return dataset.variables['solar_zenith_angle'][i_lat, i_lon] > 70.
 
 
-def get_goes_data(lat, lon, date, goes_foldername, vis_varnames, ir_varnames,
-                  delta_index=20, beginning_time=0, end_time=23):
+def get_goes_data(lat_traj, lon_traj, date_traj, goes_foldername, vis_varnames,
+                  ir_varnames, delta_index=20, beginning_time=0, end_time=23):
 
-   # a list that stores all of the times taken from the trajectory_file
-    time_list = []
     # a list that stores numpy arrays of float data that comes from each netcdf
     # file
+    out_of_bounds_flag = 0
     out_data = {varname: [] for varname in (vis_varnames + ir_varnames)}
     long_names = {}
     units = {}
@@ -158,10 +159,7 @@ def get_goes_data(lat, lon, date, goes_foldername, vis_varnames, ir_varnames,
     # cycles through all of the times since the times is the same length as the
     # lat_traj and lon_traj, to take data from each of the trajectory points
     # an add that to a data list and add all of the tiems to a list of times
-    for x in range(0, len(lat)):
-        # gets a datetime object that is retreived earlier from the trajectory
-        # data
-        time_item = date[x]
+    for x, time_item in enumerate(date_traj):
         # finds the day in the year which is necesary for the name of the
         # netcdf file that must be inputted
         day_in_year = time_item.timetuple().tm_yday
@@ -175,8 +173,7 @@ def get_goes_data(lat, lon, date, goes_foldername, vis_varnames, ir_varnames,
             dataset = nc4.Dataset(goes_foldername + out_filename)
 
             # adds the time for the file to the time_list
-            time_list.append(time_item)
-            night = is_night(lat[x], lon[x], dataset)
+            night = is_night(lat_traj[x], lon_traj[x], dataset)
             # retreives the lat and lon coordinates that correspond to
             # points in the variable array
             lat = dataset.variables['latitude'][:]
@@ -192,12 +189,11 @@ def get_goes_data(lat, lon, date, goes_foldername, vis_varnames, ir_varnames,
                 try:
                     append_data = get_trajectory_data(
                             dataset.variables[varname], lat, lon,
-                            lat[x:x+1], lon[x:x+1],
+                            lat_traj[x:x+1], lon_traj[x:x+1],
                             delta_index).flatten()
-                except TrajectoryError as e:
-                    print "TRAJECTORY ERROR for trajectory {}, tnum {}: {}".format(
-                        trajectory_filename, tnum, e)
-                    print goes_foldername + out_filename
+                except TrajectoryError:
+                        out_of_bounds_flag = 1
+                        pass
                 append_data[append_data ==
                             dataset.variables[varname]._FillValue] = np.NaN
                 out_data[varname].append(append_data)
@@ -214,12 +210,10 @@ def get_goes_data(lat, lon, date, goes_foldername, vis_varnames, ir_varnames,
                         np.empty(((delta_index*2+1)**2,))*np.NaN)
             dataset.close()
             # in case the file does not exist
-        except RuntimeError as e:
+        except RuntimeError:
             print 'Caught RuntimeError'
-            print goes_foldername + out_filename
             # adds the time so that a time is still represented in the
             # graph even though it should display as empty
-            time_list.append(time_item)
             # adds an array of non-numbers to the data_list to show that
             # there was no data inputted at this time
             for varname in (vis_varnames + ir_varnames):
@@ -228,30 +222,31 @@ def get_goes_data(lat, lon, date, goes_foldername, vis_varnames, ir_varnames,
 
     if len(units.keys()) == 0:
         # no GOES files were found
-        continue
+        raise TrajectoryError('no GOES files found')
     # takes all of the data from the data_list and puts it into a numpy array
     # for ease of using numpy methods
     for varname in (vis_varnames + ir_varnames):
         out_data[varname] = np.asarray(out_data[varname])
-    out_data['time'] = np.asarray(time_list)
+    out_data['time'] = np.asarray(date_traj)
+    print out_data['time']
     out_data['Nd'] = (
         1.4067 * 10**(4) * (out_data['cloud_visible_optical_depth'] ** 0.5) /
         (out_data['cloud_particle_size'] ** 2.5))
     long_names['Nd'] = 'cloud droplet number concentration'
     units['Nd'] = '1/cm^3'
-    out_data['lat_traj'] = lat
-    out_data['lon_traj'] = lon
+    out_data['lat_traj'] = lat_traj
+    out_data['lon_traj'] = lon_traj
     for k in units.keys():
         units[k] = str(units[k])
         long_names[k] = str(long_names[k])
 
+    return out_data, long_names, units, out_of_bounds_flag
 
 
-def get_goes_data(trajectory_filename, goes_foldername, vis_varnames,
-                  ir_varnames,
-                  delta_index=20, beginning_time=0, end_time=23, lt=None):
-    # for traj_num in range(0,23):
-#    tnum = 1
+def get_goes_from_multitrajectory(trajectory_filename, goes_foldername,
+                                  vis_varnames, ir_varnames, delta_index=20,
+                                  beginning_time=0, end_time=23, lt=None,
+                                  keylist=None):
     # retreives the information from the trajectory_filename to get all of the
     # trajectories necessary for inputting data from the netcdf files
     T = read_tdump(os.path.join(goes_foldername, trajectory_filename))
@@ -260,6 +255,10 @@ def get_goes_data(trajectory_filename, goes_foldername, vis_varnames,
     long_names_list = []
     units_list = []
     for tnum in t.groups.keys():
+        if keylist is not None:
+            if tnum not in keylist:
+                print('skipping trajectory {}'.format(tnum))
+                continue
         print('getting trajectory {}'.format(tnum))
         if lt is not None:
             lt.update(overwrite=False)
@@ -271,9 +270,18 @@ def get_goes_data(trajectory_filename, goes_foldername, vis_varnames,
         lat_traj = np.array(traj['lat'])
         lon_traj = np.array(traj['lon'])
         # retrieves all of the times to sample data
-        time = np.array([datetime64_to_datetime(item) for item in
-                        np.array(traj['lat'].index)])
-
+        date_traj = np.array([datetime64_to_datetime(item) for item in
+                             np.array(traj['lat'].index)])
+        try:
+            out_data, long_names, units, oob_flag = get_goes_data(
+                lat_traj, lon_traj, date_traj, goes_foldername,
+                vis_varnames, ir_varnames, delta_index, beginning_time, end_time)
+            if oob_flag:
+                print 'Trajectory out of bounds: {}, tnum {}'.format(
+                    trajectory_filename, tnum)
+        except TrajectoryError as e:
+            print '{}: tnum {}: {}'.format(trajectory_filename, tnum, e)
+            continue
         out_data_list.append(out_data)
         long_names_list.append(long_names)
         units_list.append(units)
@@ -284,6 +292,32 @@ def get_goes_data(trajectory_filename, goes_foldername, vis_varnames,
 #        return out_data_list[0], long_names_list[0], units_list[0]
     else:
         return out_data_list, long_names_list, units_list
+
+
+def get_goes_from_flightfile(flight_filename, goes_foldername,
+                             vis_varnames, ir_varnames, delta_index=20,
+                             beginning_time=0, end_time=23, lt=None):
+    with nc4.Dataset(flight_filename) as dataset:
+        lats = dataset.variables['GGLAT'][:]
+        lons = dataset.variables['GGLON'][:]
+        date_var = dataset.variables['Time']
+        dates = nc4.num2date(date_var[:], units=date_var.units)
+
+        ds = pd.DataFrame(index=dates, data={'lat': lats, 'lon': lons})
+        ds_lowres = ds.resample('15Min').mean()
+        lat_traj = ds_lowres.lat.values
+        lon_traj = ds_lowres.lon.values
+        date_traj = np.array([datetime64_to_datetime(item) for item in
+                             np.array(ds_lowres.index)])
+
+        out_data, long_names, units, oob_flag = get_goes_data(
+            lat_traj, lon_traj, date_traj, goes_foldername,
+            vis_varnames, ir_varnames, delta_index, beginning_time, end_time)
+        if oob_flag:
+            print 'Trajectory out of bounds: {}, tnum {}'.format(
+                    flight_filename)
+            raise IndexError('trajectory out of bounds')
+    return out_data, long_names, units
 
 
 def goes_histogram(var_name, trajectory_filename, goes_foldername,

@@ -36,6 +36,15 @@ trajectory_dir = r'/home/disk/eos4/jkcm/Data/CSET/Lagrangian_project/Trajectorie
 GOES_source = '/home/disk/eos4/jkcm/Data/CSET/GOES/VISST_pixel'
 
 
+def varcheck(fname, attr):
+    with nc4.Dataset(fname) as dataset:
+        if attr in dataset.variables.keys():
+#            print 'okay'
+            return True
+        else:
+            print fname
+            return False
+
 def get_hysplit_files(run_date, run_hours):
     """Get HYSPLIT files required to run trajectories, return as list of files
     run_date: date of trajectory initialization
@@ -312,6 +321,7 @@ def plot_trajectory(date=None, filename=None):
     fig, ax, m_ax = make_map_plot()
     add_tdump_to_plot(m_ax, filename)
     return
+
 
 def make_map_plot(fig=None):
     if fig is None:

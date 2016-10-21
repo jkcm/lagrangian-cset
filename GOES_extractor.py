@@ -11,7 +11,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-from hsproject.plots import get_goes_data
+from hsproject.plots import get_goes_from_multitrajectory
 from hsproject.util import TrajectoryError
 from colormaps import viridis
 import xray
@@ -23,17 +23,19 @@ from LoopTimer import LoopTimer
 
 pairs = (
     (6, '1deg'),
-    (13, '2deg'),
-    (27, '4deg'),
+#    (13, '2deg'),
+#    (27, '4deg'),
 )
 
 max_high_cloud_pct = 0.3
-
+ # 7 21 all 1deg
 
 #date_list = [dt.datetime(2015, 7, 01) + dt.timedelta(x) for x in range(0, 60)]
 #date_list = [dt.datetime(2015, 07, 01) + dt.timedelta(x) for x in range(0, 1)]
-date_list = [dt.datetime(2015, 7, 01), dt.datetime(2015, 8, 03)]
-
+#date_list = [dt.datetime(2015, 7, 01), dt.datetime(2015, 8, 03)]
+date_list = [dt.datetime(2015, 7, 21)]
+keylist = [1]
+keylist = None
 
 for i, d in enumerate(date_list):
     date_list[i] = d.replace(tzinfo=pytz.UTC)
@@ -110,11 +112,12 @@ for di, date in enumerate(date_list):
 #                (vis_varnames + ir_varnames + ('cloud_fraction',))):
 #            continue
         try:
-            data_list, long_names_list, units_list = get_goes_data(
+            data_list, long_names_list, units_list = get_goes_from_multitrajectory(
                 filename,
                 goes_folder, vis_varnames + ('visible_count',),
                 ir_varnames + ('cloud_phase',),
-                delta_index=delta_index, lt=lt)
+                delta_index=delta_index, lt=lt,
+                keylist=keylist)
         except RuntimeError as e:
             print('caught in datelist loop')
             continue
@@ -125,6 +128,9 @@ for di, date in enumerate(date_list):
         for i, (data, long_names, units) in enumerate(zip(
                 data_list, long_names_list, units_list)):
             print('Working on trajectory {}'.format(i))
+            if i != 0:
+                print ('skipping {}'.foramt(i))
+                continue
             sys.stdout.flush()
 
             date_name = "{:%Y%m%d}".format(date)
