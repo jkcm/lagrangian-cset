@@ -57,38 +57,3 @@ if __name__ == "__main__":
                  y=1.08)
     outfile = r'/home/disk/eos4/jkcm/Data/CSET/Lagrangian_project/all_trajectories.png'
     fig.savefig(outfile, dpi=300, bbox_inches='tight')
-
-
-#
-#
-#  rundate = startdate + dt.timedelta(days=i)
-#    timediff = rundate - hydate
-#    offset = '{:03.0f}'.format(timediff.total_seconds()/3600)
-#
-#    cu.control_gfsf(rundate, coords=coords, hyfile_list=[hysplit_file],
-#                    hours=hours)
-#    call(params.HYSPLIT_call, shell=False, cwd=CONT_out)
-#
-#    tdump_file = os.path.join(tdump_out, ''.join(['tdump', rundate.strftime('%Y%m%dH%H%M')]))
-#
-#    'Most Recent GOES w/ tomorrow mornings trajectories'
-#    figstr = 'UW_HYSPLIT_GFS.{:%Y%m%d%H%M}+' + offset +\
-#        'H_trajectory_grid.png'
-#    outfile = os.path.join(plt_out, figstr.format(hydate))
-#    print(outfile)
-#    cu.plot_tdump_clear(tdump_file, outfile, latlon_range)
-#
-#
-#    ## Ascension backtrajectories
-#    rundate_back = rundate+dt.timedelta(hours=hours)
-#    ascension_grid = cu.gridder([-8.9, -15.3], [-6.9, -15.3], [-6.9, -13.3], [-8.9, -13.3], numlats=3, numlons=3)
-#    cu.control_gfsf(rundate_back, coords=ascension_grid, hyfile_list=[hysplit_file], hours=-hours)
-#
-#    call(params.HYSPLIT_call, shell=False, cwd=CONT_out)
-#
-#    tdump_file_back = os.path.join(tdump_out, ''.join(['tdump', rundate_back.strftime('%Y%m%dH%H%M')]))
-#
-#    figstr = 'UW_HYSPLIT_GFS.{:%Y%m%d%H%M}+' + offset +'H_ascension_grid.png'
-#    outfile_back = os.path.join(plt_out, figstr.format(hydate))
-#    print(outfile_back)
-#    cu.plot_tdump_clear(tdump_file_back, outfile_back, latlon_range)
