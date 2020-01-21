@@ -20,12 +20,14 @@ from urllib.request import urlopen
 from urllib.error import HTTPError
 import collections
 import matplotlib.path as path
+import glob
 import xlrd
 import xarray as xr
 import warnings
 import collections
 import pickle
-import met_utils as mu
+import sys
+from Lagrangian_CSET import met_utils as mu
 
 from scipy.interpolate import interp1d
 # %% Parameters
@@ -42,6 +44,7 @@ HYSPLIT_call = '/home/disk/p/jkcm/hysplit/trunk/exec/hyts_std'  # to run HYSPLIT
 HYSPLIT_source = '/home/disk/eos4/jkcm/Data/HYSPLIT/source'
 ERA_source = r'/home/disk/eos4/jkcm/Data/CSET/ERA5'
 ERA_ens_source = r'/home/disk/eos4/jkcm/Data/CSET/ERA5/ensemble'
+ERA_ens_temp_source = r'/home/disk/eos4/jkcm/Data/CSET/ERA5/ens_temp'
 MERRA_source = r'/home/disk/eos4/jkcm/Data/CSET/MERRA'
 base_date = dt.datetime(2015, 7, 1, 0, 0, 0, tzinfo=pytz.UTC)
 CSET_flight_dir = r'/home/disk/eos4/jkcm/Data/CSET/flight_data'
@@ -90,6 +93,15 @@ def closest_index(lat_traj, lon_traj, lat, lon):
     return np.unravel_index(np.nanargmin(dist), dist.shape)
 
 
+def get_GOES_files_for_dates(date_array):
+# if True:
+    all_GOES_files = sorted(glob.glob(r'/home/disk/eos4/jkcm/Data/CSET/GOES/VISST_pixel/G15V03.0.NH.*.NC'))
+    all_GOES_date_strings = [i[-22:-10] for i in all_GOES_files]
+    relevant_dates = [dt.datetime.strftime(i, '%Y%j.%H%M') for i in sorted(as_datetime(date_array))]
+    relevant_files = sorted([all_GOES_files[all_GOES_date_strings.index(d)] for d in relevant_dates])
+    return relevant_files
+
+
 def get_ERA_data(var_list, lats, lons, times, pressures, box_degrees=2):
     """Retrieve ERA5 data in a box around a trajectory
     Assumes ERA5 data is 0.3x0.3 degrees
@@ -136,6 +148,10 @@ lev_map = {'1': 0.0100, '2': 0.0200, '3': 0.0327, '4': 0.0476,
            '65': 880.0000, '66': 895.0000, '67': 910.0000, '68': 925.0000,
            '69': 940.0000, '70': 955.0000, '71': 970.0000, '72': 985.0000}
 
+pres_map = {}
+for k, v in lev_map.items():
+    pres_map[v] = int(k)
+
 def get_MERRA_level(pressure):
     a, b = zip(*[(float(k), v) for k, v in lev_map.items()])
     levels = sorted(a)
@@ -143,7 +159,7 @@ def get_MERRA_level(pressure):
 
     return(interp1d(pressures, levels)(pressure))
 
-def MERRA_lev(lev, invert=False):
+def MERRA_lev(lev, invert=False, lev_map=lev_map):
     if invert:
         pres_map = {}
         for k, v in lev_map.items():
@@ -246,18 +262,17 @@ def CSET_date_from_table(date, time):
 def add_leg_sequence_labels(df, start_times, end_times, legs, sequences):
         """add leg labels to insitu data."""
 #         data = self.flight_data
-        data = df
-        sequence_array = np.empty(data.time.values.shape, dtype='U1')
-        leg_array = np.empty(data.time.values.shape, dtype='U1')
-        data['leg'] = (('time'), leg_array)
-        data['sequence'] = (('time'), sequence_array)
+        sequence_array = np.empty(df.time.values.shape, dtype='U1')
+        leg_array = np.empty(df.time.values.shape, dtype='U1')
+        df['leg'] = (('time'), leg_array)
+        df['sequence'] = (('time'), sequence_array)
         for s, e, leg, seq in zip(start_times, end_times, legs, sequences):
-            which_times = np.logical_and(as_datetime(data['time'].values) >= s,
-                                         as_datetime(data['time'].values) <= e)
-            data['leg'][which_times] = leg
-            data['sequence'][which_times] = seq
-        data.set_coords(['leg', 'sequence'], inplace=True)
-        return sequences
+            which_times = np.logical_and(as_datetime(df['time'].values) >= s,
+                                         as_datetime(df['time'].values) <= e)
+            df['leg'][which_times] = leg
+            df['sequence'][which_times] = seq
+        df = df.set_coords(['leg', 'sequence'])#, inplace=True)
+        return df, sequences
 #         self.sequences = sorted(list(set(sequences)))
 
 def flightpair_from_flight(flight):
@@ -1090,3 +1105,18 @@ def date_interp(dates_new, dates_old, vals_old, bounds_error=False):
     if vals_new.shape == ():
         return vals_new.item()
     return vals_new
+
+def get_cloud_only_vals(dataset, flip_cloud_mask=False):
+
+    # cloud if ql_cdp > 0.01 g/kg and RH > 95%
+    lwc_cdp = dataset['PLWCD_LWOI']
+    rhodt = dataset['RHODT']
+    mr = dataset['MR']
+    cheat_airdens = rhodt/mr
+    lwmr_cdp = lwc_cdp/cheat_airdens
+    lw_index = lwmr_cdp > 0.01
+    RH_index = dataset['RHUM'] > 95
+    cloud_index = np.logical_and(RH_index, lw_index)
+    if flip_cloud_mask:
+        cloud_index = np.logical_not(cloud_index)
+    return dataset.isel(time=cloud_index)

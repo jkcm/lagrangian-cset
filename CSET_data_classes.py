@@ -132,7 +132,7 @@ class CSET_Flight_Piece(CSET_Data):
         self.files.setdefault('flight_files', []).append(insitu_filename)
         with xr.open_dataset(insitu_filename) as ds:
             self.flight_data = ds.loc[dict(Time=slice(start_time, end_time))].copy(deep=True)
-            self.flight_data.rename({'Time': 'time'}, inplace=True)
+            self.flight_data = self.flight_data.rename({'Time': 'time'})#, inplace=True)
         self.add_chemistry()
 
     def add_legs(self):
@@ -145,8 +145,7 @@ class CSET_Flight_Piece(CSET_Data):
         self.legs = {key: x[key] for key in ['leg', 'rf', 'seq']}
         self.legs['Start'] = np.array(start_dates)
         self.legs['End'] = np.array(end_dates)
-        
-        seqs = utils.add_leg_sequence_labels(self.flight_data, 
+        self.flight_data, seqs = utils.add_leg_sequence_labels(self.flight_data, 
                                           start_times=self.legs['Start'],
                                           end_times=self.legs['End'],
                                           legs=self.legs['leg'],
@@ -204,6 +203,29 @@ class CSET_Flight_Piece(CSET_Data):
         vardata = self.flight_data[varname][good_index]
         return vardata
     
+    def split_into_legs(self, legs, seqs=None):
+        if not 'leg' in self.flight_data.coords.keys():
+            print("leg/sequence labels not added")
+            return None
+        
+        ret_legs = {}
+        if not seqs:
+            seqs = self.sequences
+        if hasattr(self, 'extended'):
+            if self.extended:
+                subseq_seq = chr(ord(max(self.sequences))+1)
+                seqs.append(subseq_seq)
+        for leg in legs:
+            ret_seqs = {}
+            for seq in seqs:
+                if not seq in set('ABCDEFG'):
+                    continue
+                d = self.flight_data.where(
+                    np.logical_and(self.flight_data.leg==leg, self.flight_data.sequence==seq), drop=True)
+                ret_seqs[seq] = d
+            ret_legs[leg] = ret_seqs
+        return ret_legs
+    
     def get_profiles(self, seqs=None, include_ERA=False):
         if not 'leg' in self.flight_data.coords.keys():
                 print("leg/sequence labels not added")
@@ -212,12 +234,16 @@ class CSET_Flight_Piece(CSET_Data):
         profiles = {}
         if not seqs:
             seqs = self.sequences
-        if self.extended:
-            subseq_seq = chr(ord(max(self.sequences))+1)
-            seqs.append(subseq_seq)
+        if hasattr(self, 'extended'):
+            if self.extended:
+                subseq_seq = chr(ord(max(self.sequences))+1)
+                seqs.append(subseq_seq)
+#         print(seqs)
         for seq in seqs:
-            if not seq in 'ABCDEFG':
+            if not seq in set('ABCDEFG'):
+#                 print(f'skipping seq {seq}')
                 continue
+            print(f'getting sequence -{seq}-')
             d = self.flight_data.where(
                 np.logical_and(self.flight_data.leg=='d', self.flight_data.sequence==seq), drop=True)
             var_list = ['GGLAT', 'GGLON', 'GGALT', 'RHUM', 'ATX', 'MR', 'THETAE', 'THETA', 'PSXC', 'DPXC', 'PLWCC']    
@@ -238,13 +264,19 @@ class CSET_Flight_Piece(CSET_Data):
             sounding_dict['QV'] = d['MR'].values/(1+d['MR'].values/1000)
 
             try:
-                decoupling_dict = mu.calc_decoupling_from_sounding(sounding_dict, usetheta=False)
+                decoupling_dict = mu.calc_decoupling_and_inversion_from_sounding(sounding_dict, usetheta=False)
             except ValueError as v:
 #                 print("caught ValueError exception in decoupling cal at seq '{}'".format(seq))
 #                 print(v)
                 continue
-            zi_dict = mu.calc_zi_from_sounding(sounding_dict)
-            profiles[seq] = {"data": d, "dec": decoupling_dict, "zi": zi_dict, "sounding": sounding_dict}
+            except IndexError as e:
+                print(f"caught a weird indexError! sequence {seq}, flight {self.flight_name}")
+                print(e)
+                print(sounding_dict)
+                continue
+#             zi_dict = mu.calc_zi_from_sounding(sounding_dict)
+#             profiles[seq] = {"data": d, "dec": decoupling_dict, "zi": zi_dict, "sounding": sounding_dict}
+            profiles[seq] = {"data": d, "dec": decoupling_dict, "sounding": sounding_dict}
         return profiles
         
     def add_ERA_data(self):
@@ -423,7 +455,7 @@ class CSET_Flight_Piece(CSET_Data):
         radarlidar_file = os.path.join(CSET_Flight_Piece.radarlidar_data_location,
                                     '{}_COMBINED_HCR_HSRL_data_mask_version4.cdf'.format(self.flight_name.upper()))
         with xr.open_dataset(radarlidar_file) as data:
-            data.rename({'absolute_time': 'time'}, inplace=True)
+            data = data.rename({'absolute_time': 'time'})#, inplace=True)
             data['time'].values = data.time.values.astype('datetime64')
             self.radarlidar_data = data.sel(time=slice(self.start_time, self.end_time)) 
             # self.radarlidar_data =  data.where(np.logical_and(data.time>self.start_time, data.time<self.end_time))
@@ -435,8 +467,9 @@ class CSET_Flight_Piece(CSET_Data):
             raise IOError("incorrect number of precip files found")
         with xr.open_dataset(precip_files[0]) as data:
             data['time'].values = data.time.values.astype('datetime64')
-            self.precip_data = data.sel(time=slice(self.start_time, self.end_time)) 
-
+            self.precip_data = data.loc[dict(time=slice(self.start_time, self.end_time))] 
+            
+            
     def get_max_precip_by_leg(self, legname):
         if not hasattr(self, 'precip_data'):
             raise ValueError("You haven't added the precip data yet, buddy")

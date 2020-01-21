@@ -6,19 +6,19 @@ Created on Fri July  20 14:17:57 2018
 @author: jkcm
 """
 
+import utils
+import met_utils
+import lagrangian_case as lc
+
 import datetime as dt
 import numpy as np
 import os
 import xarray as xr
-import utils
-import met_utils
 import matplotlib as mpl
 mpl.rcParams['figure.figsize'] = 12,5
 import matplotlib.pyplot as plt
 import glob
-import lagrangian_case as lc
 import pandas as pd
-from utils import read_tdump
 from itertools import cycle
 from geographiclib.geodesic import Geodesic
 import time
@@ -78,9 +78,7 @@ def add_ERA_ens_to_trajectory(ds, box_degrees=2):
     space_index = int(np.round(box_degrees/0.3/2)) # go up/down/left/right this many pixels
     ens_files = [os.path.join(utils.ERA_ens_source, i) for i in sorted(os.listdir(utils.ERA_ens_source))]
     
-    
-    
-    
+
     with xr.open_mfdataset(sorted(ens_files)) as data:
         data = data.rename({'level': 'ens_level'})
         ds.coords['number'] = data.coords['number']
@@ -110,7 +108,41 @@ def add_ERA_ens_to_trajectory(ds, box_degrees=2):
                 gauss_shape = tuple([v for v,i in zip(z.shape,z.dims) if i in ['latitude', 'longitude'] ])
                 gauss = utils.gauss2D(shape=gauss_shape, sigma=gauss_shape[-1])
                 filtered = z * gauss
-                filtered2 = z.values * gauss
+#                 filtered2 = z.values * gauss
+                vals.append(filtered.sum(dim=('latitude', 'longitude')).values)
+            ds['ERA_ens_'+var] = (tuple(x for x in data[var].dims if x not in ['latitude', 'longitude']), np.array(vals), data[var].attrs)
+#     return ds
+
+
+
+    print('adding ensemble temperatures')
+    ens_temp_files = [os.path.join(utils.ERA_ens_temp_source, i) for i in sorted(os.listdir(utils.ERA_ens_temp_source))]
+    
+    with xr.open_mfdataset(sorted(ens_temp_files)) as data:
+        data = data.rename({'level': 'ens_level'})
+#         ds.coords['number'] = data.coords['number']
+#         ds.coords['ens_level'] = data.coords['ens_level']
+        
+        for var in data.data_vars.keys():
+            var_shape = data[var].isel(time=0, latitude=0, longitude=0).shape
+            vals = []
+            for (lat, lon, time) in zip(lats, lons, times):
+                if lat > np.max(data.coords['latitude']) or lat < np.min(data.coords['latitude']) or \
+                    lon > np.max(data.coords['longitude']) or lon < np.min(data.coords['longitude']):
+                    print('out of range of data')
+                    print(lat, lon, time)
+                    print(np.max(data.coords['latitude'].values), np.min(data.coords['latitude'].values))
+                    print(np.max(data.coords['longitude'].values), np.min(data.coords['longitude'].values))
+                    vals.append(np.full(var_shape, float('nan'), dtype='float'))
+                    continue
+                x = data[var].sel(longitude=slice(lon - box_degrees/2, lon + box_degrees/2),
+                                  latitude=slice(lat + box_degrees/2, lat - box_degrees/2))
+                z = x.sel(method='nearest', time=time, tolerance=np.timedelta64(1, 'h'))
+                #this applies a 2D gaussian the width of z, i.e. sigma=box_degrees
+                gauss_shape = tuple([v for v,i in zip(z.shape,z.dims) if i in ['latitude', 'longitude'] ])
+                gauss = utils.gauss2D(shape=gauss_shape, sigma=gauss_shape[-1])
+                filtered = z * gauss
+#                 filtered2 = z.values * gauss
                 vals.append(filtered.sum(dim=('latitude', 'longitude')).values)
             ds['ERA_ens_'+var] = (tuple(x for x in data[var].dims if x not in ['latitude', 'longitude']), np.array(vals), data[var].attrs)
     return ds
@@ -471,11 +503,12 @@ def make_trajectory(rfnum, trajnum, save=False, trajectory_type='500m_+72'):
     ds = add_advection_to_trajectory(ds)
     print('adding ERA sfc data...')
     ds = add_ERA_sfc_data(ds)
+    print('adding ERA ensemble data...')
+    ds = add_ERA_ens_to_trajectory(ds)
+    print('adding GOES data...')
     ds = add_GOES_obs(ds)
     print("adding MODIS...")
     ds = add_MODISPBL_to_trajectory(ds)
-    ds = add_ERA_ens_to_trajectory(ds)
-    print("adding ERA ensemble...")
 #     print("adding MERRA...")
 #     ds = add_MERRA_to_trajectory(ds)
     if save:
@@ -495,7 +528,6 @@ if __name__ == "__main__":
         traj_list = case['TLC_name'].split('_')[2].split('-')
         for dirn in ['forward', 'backward']:
             nc_dirstring = '48h_backward' if dirn == 'backward' else '72h_forward'
-            
             for traj in traj_list:
                 name = os.path.join(utils.trajectory_netcdf_dir, "{}_{}_{}.nc".format(flight, nc_dirstring, traj))
                 print("working on {}...".format(os.path.basename(name)))

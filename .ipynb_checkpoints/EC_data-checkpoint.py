@@ -341,7 +341,7 @@ if __name__ == "__main__":
     for k,v in dates.items():
         lt.update()
 #         get_ensemble_pressure_level_ERA5_Data(namestr=k, datestr=v, levels=bl_levels, param="130.128")
-        get_cds_ensemble_pressure_level_ERA5_data(namestr=k, datestr=v, levels=bl_levels, param="130.128")
+        get_cds_ensemble_pressure_level_ERA5_data(namestr=k, datestr=v, levels=bl_levels, param="130.128/129.128")
 #         get_flux_4dvar_data(i)
 #         get_ensemble_pressure_level_ERA5_Data(namestr=k, datestr=v, levels=bl_levels, param="135.128/157.128")
 

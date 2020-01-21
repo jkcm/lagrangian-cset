@@ -5,13 +5,14 @@ __author__ = "Johannes Mohrmann"
 __version__ = "0.1"
 
 from CSET_data_classes import CSET_Data, CSET_Flight_Piece
-import re
 import utils
+import met_utils as mu
+
+import re
 import numpy as np
 import os
 import xarray as xr
 import matplotlib.pyplot as plt
-import met_utils as mu
 
 all_cases = {
     1: {'ALC_name': 'ALC_RF02B-RF03CD',
@@ -88,8 +89,6 @@ class LagrangianCase(CSET_Data):
 #################################################################################################
 ### Aircraft CASE
 #################################################################################################
-    
-    
 
 class AircraftCase(LagrangianCase): 
     """Lagrangian Case containing only data from aircraft, with a before/after 
@@ -158,7 +157,7 @@ class AircraftCase(LagrangianCase):
         self.outbound_Flight_Piece = CSET_Flight_Piece(flight_name=self.outbound_flight,
                                                    start_time = self.outbound_start_time,
                                                    end_time = self.outbound_end_time)
-        seqs = utils.add_leg_sequence_labels(self.outbound_Flight_Piece.flight_data, 
+        self.outbound_Flight_Piece.flight_data, seqs = utils.add_leg_sequence_labels(self.outbound_Flight_Piece.flight_data, 
                                           start_times=self.outbound_legs['Start'],
                                           end_times=self.outbound_legs['End'],
                                           legs=self.outbound_legs['leg'],
@@ -170,7 +169,7 @@ class AircraftCase(LagrangianCase):
                                                    start_time=self.return_start_time,
                                                    end_time=self.return_end_time)
         
-        seqs = utils.add_leg_sequence_labels(self.return_Flight_Piece.flight_data, 
+        self.return_Flight_Piece.flight_data, seqs = utils.add_leg_sequence_labels(self.return_Flight_Piece.flight_data, 
                                              start_times=self.return_legs['Start'],
                                              end_times=self.return_legs['End'],
                                              legs=self.return_legs['leg'],
@@ -188,13 +187,13 @@ class AircraftCase(LagrangianCase):
         
     def add_precip_data(self):
         self.outbound_Flight_Piece.add_precip_data()
-        utils.add_leg_sequence_labels(self.outbound_Flight_Piece.precip_data, 
+        self.outbound_Flight_Piece.precip_data, _ = utils.add_leg_sequence_labels(self.outbound_Flight_Piece.precip_data, 
                                       start_times=self.outbound_legs['Start'],
                                       end_times=self.outbound_legs['End'],
                                       legs=self.outbound_legs['leg'],
                                       sequences=self.outbound_legs['seq'])
         self.return_Flight_Piece.add_precip_data()
-        utils.add_leg_sequence_labels(self.return_Flight_Piece.precip_data, 
+        self.return_Flight_Piece.precip_data, _ = utils.add_leg_sequence_labels(self.return_Flight_Piece.precip_data, 
                                       start_times=self.return_legs['Start'],
                                       end_times=self.return_legs['End'],
                                       legs=self.return_legs['leg'],
@@ -254,13 +253,10 @@ class TrajectoryCase(LagrangianCase):
             data['ERA_wspd'] = (data.ERA_u.dims, wspd, {"long_name": "wind speed", "units": data.ERA_u.units})
             
             
-            
             if 'ERA_ens_w' in data.data_vars.keys():
-                print('adding ERA ens w_vert')
+#                 print('adding ERA ens w_vert')
                 w_pres_ens = data.ERA_ens_w.values
-                idx = [i in data.ens_level.values for i in data.level.values]
-                ens_t = data.ERA_t.values[:,idx]
-                ens_t = np.repeat(ens_t[:, np.newaxis, :], 10, axis=1)
+                ens_t = data.ERA_ens_t.values
                 rho_ens = mu.density_from_p_Tv(np.broadcast_to(data.ens_level.values, w_pres_ens.shape)*100, 
                                                Tv=ens_t)  # TODO get virtual temp right
                 ens_w_vert = -w_pres_ens/(rho_ens*9.81)
@@ -310,18 +306,27 @@ class TrajectoryCase(LagrangianCase):
     def get_from_inv(self, varname, ens=False):
         if ens:
             lev = 'ens_level'
+            temp = 'ERA_ens_t'
         else:
             lev = 'level'    
+            temp = 'ERA_t'
         if not hasattr(self, 'traj_data'):
             print("warning: ERA traj data not added; adding now")
             self.add_traj_data()
         ret = dict()
         for trajname, tf in zip(self.trajectories, self.trajectory_files):
             ERA_data = self.traj_data[trajname]
+#             t = ERA_data[temp].values
+#             p = np.broadcast_to(ERA_data[lev].values, t.shape)
+#             z_bad = ERA_data.ERA_z.values/9.81
+#             z = np.broadcast_to(z_bad, t.shape)
+            t = ERA_data.ERA_t.values
+            p = np.broadcast_to(ERA_data.level.values, t.shape)
+        
             z = ERA_data.ERA_z.values/9.81
-            theta = mu.theta_from_p_T(p=np.broadcast_to(ERA_data.level.values, z.shape), T=ERA_data.ERA_t.values)
             try:
-                heff = mu.heffter_pblht_2d(z, theta, handle_nans=True)
+#                 heff = mu.inversion_(z, theta, handle_nans=True)
+                inv_dict = mu.get_inversion_layer_2d(z, t, p, axis=0, handle_nans=True)
             except ValueError as e:
                 print(self.name)
                 print(trajname)
@@ -332,23 +337,48 @@ class TrajectoryCase(LagrangianCase):
             else:
                 vals = np.empty_like(ERA_data.ERA_ens_sp.values).astype(float)
             if varname == 'z_i':
-                vals = heff['z_bot']
+                vals = inv_dict['z_bot']
                 newarray = ERA_data.ERA_z.mean(dim='level').copy(deep=True)
                 newarray.values = vals
                 newarray.name = 'z_i'
             else:
-                for i, (b, t) in enumerate(zip(heff['i_bot'].astype(int), heff['i_top'].astype(int))):
+#                 print(inv_dict['z_bot'])
+#                 print(inv_dict['z_top'])
+                for i, (b, t) in enumerate(zip(inv_dict['i_bot'].astype(int), inv_dict['i_top'].astype(int))):
+                    if np.abs(b)>200:
+                        print(inv_dict['i_bot'][i])
                     if np.isnan(b) or np.isnan(t):
                         vals[i] = float('nan')
+                        print("NAAAAN")
                     else:
                         if not ens:
                             vals[i] = np.nanmean(ERA_data[varname][i,slice(min(b,t), max(b,t))])
                         else: 
-                            vals[i] = np.nanmean(ERA_data[varname][i,:,slice(min(b,t), max(b,t))])
-#                         vals[i] = ERA_data[varname].sel(level=slice(min(b,t), max(b,t))).isel(time=i).mean(skipna=True)
+                            try:
+                                p_bot = ERA_data.level.values[b]
+                                p_top = ERA_data.level.values[t]
+                            except IndexError as e:
+                                vals[i,:] = np.nan
+                                print("muck up on case {}, traj {}, i={}".format(self, trajname, i))
+                                continue
+                            i_bot = int(np.nonzero(ERA_data.ens_level.values == p_bot)[0][0])
+                            try:
+                                i_top = int(np.nonzero(ERA_data.ens_level.values == p_top)[0][0])
+                            except IndexError as e:
+                                i_top = int(np.nonzero(ERA_data.ens_level.values == max(ERA_data.ens_level.values))[0][0])
+#                             print("idx of level b: {}".format(b))
+#                             print("level b: {}".format(p_bot))
+#                             print("idx of ens level b: {}".format(i_bot))
+#                             print("ens level b: {}".format(ERA_data.ens_level.values[i_bot]))
+#                             print("idx of level t: {}".format(t))
+#                             print("level t: {}".format(p_top))
+#                             print("idx of ens level t: {}".format(i_top))
+#                             print("ens level t: {}".format(ERA_data.ens_level.values[i_top]))
+#                             print(ERA_data.ens_level[slice(min(i_bot,i_top), max(i_bot,i_top))])
+                            vals[i,:] = ERA_data[varname][i,:,slice(min(i_bot,i_top), max(i_bot,i_top))].mean(dim='ens_level')
                 newarray = ERA_data[varname].mean(dim=lev).copy(deep=True)
-                print(newarray.shape)
-                print(vals.shape)
+#                 print(newarray.shape)
+#                 print(vals.shape)
                 newarray.values = vals
             ret[trajname] = newarray
         return ret
@@ -386,26 +416,8 @@ class CombinedCase(LagrangianCase):
         self.name = str(number) + "_" + self.ALC.name.split('_')[1]
         self.outbound_flight = ALC.outbound_flight
         self.return_flight = ALC.return_flight
-                
-                
-                
-                    
-#     def __init__(self, name):
-#         match = re.match(self.name_re, name)
-#         if not match:
-#             raise ValueError('could not parse input name')
-#         self.outbound_flight = 'RF'+match.group(1)
-#         self.return_flight = 'RF'+match.group(3)
-#         self.outbound_sequences = list(match.group(2))
-#         self.return_sequences = list(match.group(4))
-#         self.name = name
-#         self.add_legs()
-#         self.add_flight_data()
-        
         
     def plot(self, save=False, ax=None):
-        
-
         if ax is None:
             fig, ax = plt.subplots(figsize=(8.5,5.5))
 

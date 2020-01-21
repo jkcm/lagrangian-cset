@@ -302,27 +302,486 @@ def moist_static_energy(t, z, q):
     return cp*t + g*z + lv*q
 
 
-def heffter_pblht_2d(z, theta, axis=0, handle_nans=False):
-    dummy = heffter_pblht_1D(np.arange(100), np.arange(100))
-    res_dict = {key: np.empty(z.shape[axis]) for key in dummy.keys()}
+def get_inversion_layer_2d(z, t, p, axis=0, handle_nans=False):
+    res_dict = {key: np.empty(z.shape[axis]) for key in ["z_top", "z_mid", "z_bot",  "i_top", "i_mid", "i_bot",
+                                                        "t_above_inv", "t_below_inv", "d_t_inv"]}
 
-    result = np.empty(z.shape[axis])
-    for i,(z_i,theta_i) in enumerate(zip(z, theta)):
+    for i,(z_i,t_i,p_i) in enumerate(zip(z,t,p)):
         try:
-            res = heffter_pblht_1D(z_i,theta_i)
+            res = quick_inversion(z_i,t_i,p_i)
         except ValueError as e:
             if handle_nans:
-                res = {"z_top": float('nan'), "theta_top": float('nan'), "i_top": float('nan'),
-                "z_bot": float('nan'), "theta_bot": float('nan'), "i_bot": float('nan'),
-                "inversion": False}
+                res = {"z_top": np.nan, "z_mid": np.nan, "z_bot": np.nan, 
+                       "i_top": np.nan, "i_mid": np.nan, "i_bot": np.nan}
             else:
+                import matplotlib.pyplot as plt
+                plt.plot(t_i[z_i<4000], z_i[z_i<4000])
                 raise e
         for key, value in res.items():
             res_dict[key][i] = value
     return res_dict
     
+def quick_inversion(z, t, p, smooth_t=False): # z in meters, t in K, p in hPa
+
+    #getting layers
+    gamma_moist = get_moist_adiabatic_lapse_rate(T=t, p=p)*1000
+    if smooth_t:
+        gamma = -np.gradient(smooth(t, window_len=31), z)*1000
+    else: 
+        gamma = -np.gradient(t, z)*1000
+    gamma[np.gradient(z)>-1] = np.nan
+    gamma[z<330] = np.nan
+    gamma[z>3000] = np.nan    
+    gamma[np.abs(gamma)>100] = np.nan
+    gamma_diff = (gamma-gamma_moist)/1000
+
+    return_dict = {"z_top": np.nan, "z_mid": np.nan, "z_bot": np.nan, 
+                   "i_top": np.nan, "i_mid": np.nan, "i_bot": np.nan,
+                   "t_above_inv": np.nan, "t_below_inv": np.nan, "d_t_inv": np.nan}
     
-def heffter_pblht_1D(z, theta, find_top=False):
+    #inversion center
+    i_mid = np.nanargmin(gamma)  # middle of inversion is where the lapse rate is the strongest
+    if np.isnan(i_mid):
+        print('no i_mid')
+        return buncha_nans
+    z_mid = z[i_mid]
+    return_dict['i_mid'] = i_mid
+    return_dict['z_mid'] = z_mid
+    
+    #inversion base
+    max_gap = gamma[i_mid] - gamma_moist[i_mid]
+    try: # first way to get the inversion base: where the lapse rate is sufficiently close to the moist adiabat again
+        z_bot = np.max(z[np.logical_and(z<z[i_mid], gamma-gamma_moist>max_gap/4)])
+    except ValueError as v: # no crossing of the max_gap/4 line go for smallest gap below zmid
+        cands = z<z[i_mid] # second way to get the inversion base: wherever it gets closest.
+        if not np.any(cands):
+            raise ValueError("no values below inversion middle!")            
+        z_bot = z[cands][np.argmin(np.abs(gamma[cands]-gamma_moist[cands]))]
+    i_bot = np.argwhere(z==z_bot)[0][0]
+    return_dict['i_bot'] = i_bot
+    return_dict['z_bot'] = z_bot
+
+    #inversion top
+    top_candidates = np.logical_and(z>z[i_mid], gamma-gamma_moist>max_gap/4)
+    if np.any(top_candidates):
+        z_top = np.min(z[top_candidates]) # first way to get inversion top: where the lapse rate is sufficiently close to the moist adiabat again
+        i_top = np.argwhere(z==z_top)[0][0]
+    else: #second way to get inversion top: wherever it gets closest
+        cands = z>z[i_mid]
+        if not np.any(cands):
+            raise ValueError("no values above inversion middle!")
+        z_top = z[cands][np.argmin(np.abs(gamma[cands]-gamma_moist[cands]))]
+        i_top = np.argwhere(z==z_top)[0][0]
+    return_dict['i_top'] = i_top
+    return_dict['z_top'] = z_top
+    
+    t_below_inv = t[i_bot]
+    i_inv = np.logical_and(z>z_bot, z<z_top)
+    d_t_inv = integrate.trapz(gamma_diff[i_inv], z[i_inv])
+    t_above_inv = t_below_inv + d_t_inv
+    return_dict['t_above_inv'] = t_above_inv
+    return_dict['t_below_inv'] = t_below_inv
+    return_dict['d_t_inv'] = d_t_inv
+    
+    
+    return return_dict
+    
+
+    
+def calc_decoupling_and_inversion_from_sounding(sounding_dict, usetheta=False, get_jumps=True, smooth_t=True):
+    #Setting up variables
+    z = sounding_dict['GGALT']
+    theta = sounding_dict['THETA']
+    theta_e = sounding_dict['THETAE']
+    qv = sounding_dict['QV']
+    t = sounding_dict['ATX']
+    if 'PSXC' in sounding_dict.keys():
+        p = sounding_dict['PSXC']
+    else:
+        p = sounding_dict['PSX']
+    if not usetheta:
+        theta_l = sounding_dict['THETAL']
+        ql = sounding_dict['QL']
+        if np.all(np.isnan(ql)):
+            qt = qv
+        else:
+            qt = qv + ql
+    else:
+        theta_l = sounding_dict['THETA']
+        qt = qv
+
+    #failing quietly
+    buncha_nans = {"d_qt": np.nan, "d_theta_e": np.nan, "d_theta_l": np.nan,
+                "alpha_thetal": np.nan, "alpha_qt":np.nan, "alpha_thetae": np.nan,
+                "d_q_inv": np.nan, "d_t_inv": np.nan,
+                "t_below_inv": np.nan, "t_above_inv": np.nan, "q_below_inv": np.nan, "q_above_inv": np.nan,
+                "z_top": np.nan, "z_mid": np.nan, "z_bot": np.nan, "i_top": np.nan, "i_mid": np.nan, "i_bot": np.nan}
+        
+        
+    buncha_nans['lat'] = np.nanmean(sounding_dict['GGLAT'])
+    buncha_nans['lon'] = np.nanmean(sounding_dict['GGLON'])
+    buncha_nans['lon_p'] =-140 + 0.8*(buncha_nans['lon']+140) + 0.4*(buncha_nans['lat']-30)   
+
+    buncha_nans['time'] = sounding_dict['TIME'][0]
+        
+    inv_levs = quick_inversion(z, t, p, smooth_t=smooth_t)
+    buncha_nans.update(inv_levs)
+    z_top, z_mid, z_bot = inv_levs['z_top'], inv_levs['z_mid'], inv_levs['z_bot']
+    i_top, i_mid, i_bot = inv_levs['i_top'], inv_levs['i_mid'], inv_levs['i_bot']
+    
+#     for key, value in inv_levs.items():
+#             buncha_nans[key] = value # better with dict.update()?
+    
+    #jumps in q, t    
+#     i_upper = np.logical_and(z<=z_top, z>=z_mid) #this is the upper half of the inversion
+#     if np.sum(i_upper) == 0:
+#         print("error: no upper inv layer: z_top: {}  z_mid: {}".format(z_top, z_mid))
+#         return buncha_nans
+#     i_lower = np.logical_and(z>z_bot, z<z_mid) #this is the lower half of the inversion
+
+    q_above_inv = qt[i_top]
+    q_below_inv = qt[i_bot]
+    d_q_inv = q_above_inv - q_below_inv
+    buncha_nans['q_above_inv'] = q_above_inv
+    buncha_nans['q_below_inv'] = q_below_inv
+    buncha_nans['d_q_inv'] = d_q_inv
+    
+
+
+    #decoupling ests
+    upper_25 = z_bot - (z_bot - min(z))/4. #top quarter of the MBL
+    u_i = np.logical_and(z > upper_25, z < z_bot)
+    lower_25 = min(z) + (z_bot - min(z))/4. #bottom quarter of the MBL
+    l_i = np.logical_and(z < lower_25, z > min(z))
+    
+    ft_base = z_top
+    ft_top = ft_base + 500
+    l_ft = np.logical_and(z < ft_top, z > ft_base) #lower_free tropospheric values
+
+    if z_bot - min(z) < 300 or np.sum(l_ft) == 0:
+        return buncha_nans # can't calculate decouplng values if there is not enough MBL vertical or free-tropospheric 
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        theta_e_sml = np.nanmean(theta_e[l_i])
+        theta_e_bzi = np.nanmean(theta_e[u_i])
+        theta_e_uzi = np.nanmean(theta_e[l_ft])
+
+        theta_l_sml = np.nanmean(theta_l[l_i])
+        theta_l_bzi = np.nanmean(theta_l[u_i])
+        theta_l_uzi = np.nanmean(theta_l[l_ft])
+    
+        qt_sml = np.nanmean(qt[l_i])
+        qt_bzi = np.nanmean(qt[u_i])
+        qt_uzi = np.nanmean(qt[l_ft])
+
+    d_theta_e = theta_e_bzi - theta_e_sml
+    d_theta_l = theta_l_bzi - theta_l_sml
+    d_qt = qt_bzi - qt_sml
+    buncha_nans['d_qt'] = d_qt
+    buncha_nans['d_theta_l'] = d_theta_l
+    buncha_nans['d_theta_e'] = d_theta_e
+    
+    alpha_thetal = (theta_l_bzi - theta_l_sml)/(theta_l_uzi - theta_l_sml)
+    alpha_qt = (qt_bzi - qt_sml)/(qt_uzi - qt_sml)
+    alpha_thetae = (theta_e_bzi - theta_e_sml)/(theta_e_uzi - theta_e_sml)
+    buncha_nans['alpha_thetal'] = alpha_thetal
+    buncha_nans['alpha_qt'] = alpha_qt
+    buncha_nans['alpha_thetae'] = alpha_thetae
+    
+        
+        
+    return buncha_nans # hopefully no longer nans
+    
+    
+    
+def calc_decoupling_and_zi_from_flight_data(flight_data, usetheta=False):
+    
+    var_list = ['GGLAT', 'GGLON', 'GGALT', 'RHUM', 'ATX', 'MR', 'THETAE', 'THETA', 'PSX', 'DPXC', 'PLWCC']    
+    
+    
+    sounding_dict = {}
+    sounding_dict['TIME'] = flight_data.time.values
+    for i in var_list:
+        sounding_dict[i] = flight_data[i].values
+    if 'ATX' in var_list:
+        sounding_dict['ATX'] = sounding_dict['ATX'] + 273.15
+    sounding_dict['DENS'] = density_from_p_Tv(flight_data['PSX'].values*100, flight_data['TVIR'].values+273.15)  
+    sounding_dict['QL'] = flight_data['PLWCC'].values/sounding_dict['DENS']
+    sounding_dict['THETAL'] = get_liquid_water_theta(
+        sounding_dict['ATX'], sounding_dict['THETA'], sounding_dict['QL'])
+    sounding_dict['QV'] = flight_data['MR'].values/(1+flight_data['MR'].values/1000)
+    
+    decoupling_dict = calc_decoupling_and_inversion_from_sounding(sounding_dict, usetheta=usetheta)
+#     zi_dict = calc_zi_from_sounding(sounding_dict)
+    return {**decoupling_dict}
+
+def calculate_LTS(t_700, t_1000):
+    """calculate lower tropospheric stability
+    t_700: 700 hPa temperature in Kelvin
+    t_1000: 1000 hPa temperature in Kelvin
+    
+    returns: lower tropospheric stability in Kelvin
+    """
+    theta_700 = theta_from_p_t(p=700.0, t=t_700)
+    lts = theta_700-t_1000
+    return lts
+    
+    
+def calculate_moist_adiabatic_lapse_rate(t, p): 
+    """calculate moist adiabatic lapse rate from pressure, temperature
+    p: pressure in hPa
+    t: temperature in Kelvin
+    
+    returns: moist adiabatic lapse rate in Kelvin/m
+    """
+    es = 611.2*np.exp(17.67*(t-273.15)/(t-29.65)) # Bolton formula, es in Pa
+    qs = 0.622*es/(p*100-0.378*es)
+    num = 1 + lv*qs/(Rdry*t)
+    denom = 1 + lv**2*qs/(cp*Rvap*t**2)
+    gamma = g/cp*(1-num/denom)
+    return gamma
+    
+def theta_from_p_t(p, t, p0=1000.0):
+    """calculate potential temperature from pressure, temperature
+    p: pressure in hPa
+    t: temperature in Kelvin
+    
+    returns: potential temperature in Kelvin
+    """
+    theta = t * (p0/p)**(Rdry/cp)
+    return theta
+
+
+def calculate_LCL(t, t_dew, z=0.0):
+    """calculate lifting condensation level from temperature, dew point, and altitude
+    t: temperature in Kelvin
+    t_dew: dew point temperature in Kelvin
+    z: geopotential height in meters. defaults to 0
+    
+    returns: lifting condensation level in meters
+    
+    raises: ValueError if any dew points are above temperatures (supersaturation)
+    """
+    if np.any(t_dew > t):
+        t_dew = np.minimum(t, t_dew)
+#         raise ValueError('dew point temp above temp, that\'s bananas')
+    return z + 125*(t - t_dew)
+
+def calculate_EIS(t_1000, t_850, t_700, z_1000, z_700, r_1000):
+    """calculate estimated inversion strength from temperatures, heights, relative humidities
+    t_1000, t_850, t_700: temperature in Kelvin at 1000, 850, and 700 hPa
+    z_1000, z_700: geopotential height in meters at 1000 and 700 hPa
+    r_1000: relative humidity in % at 1000 hPa
+    
+    returns: estimated inversion strength (EIS) in Kelvin
+    """
+    if hasattr(r_1000, '__iter__'):
+        r_1000[r_1000>100] = 100  # ignoring supersaturation for lcl calculation
+    t_dew = t_1000-(100-r_1000)/5.0
+    lcl = calculate_LCL(t=t_1000, t_dew=t_dew, z=z_1000)
+    lts = calculate_LTS(t_700=t_700, t_1000=t_1000)
+    gamma_850 = calculate_moist_adiabatic_lapse_rate(t=t_850, p=850)
+    eis = lts - gamma_850*(z_700-lcl)
+    return eis
+
+
+
+
+
+# def DEC_inv_layer_from_sounding(sounding):
+#     rh = sounding['RHUM']
+#     z = sounding['GGALT']
+    
+    
+#     i_above_inv = np.where(rh<60)[0]
+#     z_above_inv = z[i_above_inv]
+#     if np.any(i_above_inv):
+#         z_mid = np.min(z_above_inv)
+#     else:
+#         z_mid = np.nan
+#     return {'z_mid': z_mid}
+    
+    
+    
+    
+# def DEC_calc_decoupling_from_sounding(sounding_dict, usetheta=False, get_jumps=True, smooth_t=True):
+#     z = sounding_dict['GGALT']
+#     theta = sounding_dict['THETA']
+#     theta_e = sounding_dict['THETAE']
+#     qv = sounding_dict['QV']
+#     t = sounding_dict['ATX']
+#     if 'PSXC' in sounding_dict.keys():
+#         p = sounding_dict['PSXC']
+#     else:
+#         p = sounding_dict['PSX']
+
+#     if not usetheta:
+#         theta_l = sounding_dict['THETAL']
+#         ql = sounding_dict['QL']
+#         if np.all(np.isnan(ql)):
+#             qt = qv
+#         else:
+#             qt = qv + ql
+#     else:
+#         theta_l = sounding_dict['THETA']
+#         qt = qv
+
+        
+        
+#     zi = heffter_pblht_1D(z, theta)
+
+    
+#     upper_25 = zi['z_bot'] - (zi['z_bot'] - min(z))/4.
+#     u_i = np.logical_and(z > upper_25, z < zi['z_bot'])
+#     lower_25 = min(z) + (zi['z_bot'] - min(z))/4.
+#     l_i = np.logical_and(z < lower_25, z > min(z))
+    
+#     ft_base = zi['z_bot']+500
+#     ft_top = ft_base + 500
+#     l_ft = np.logical_and(z < ft_top, z > ft_base)
+    
+#     buncha_nans = {"d_qt": np.nan, "d_theta_e": np.nan, "d_theta_l": np.nan,
+#                 "alpha_thetal": np.nan, "alpha_qt":np.nan, "alpha_thetae": np.nan,
+#                 "d_q_inv": np.nan, "d_t_inv": np.nan,
+#                 "t_below_inv": np.nan, "t_above_inv": np.nan, "q_below_inv": np.nan, "q_above_inv": np.nan,
+#                 "z_top": np.nan, "z_mid": np.nan, "z_bot": np.nan, "i_top": np.nan, "i_mid": np.nan, "i_bot": np.nan}
+#     if zi['z_bot'] - min(z) < 300 or np.sum(l_ft) == 0:
+#         return buncha_nans
+#     with warnings.catch_warnings():
+#         warnings.simplefilter("ignore", category=RuntimeWarning)
+#         theta_e_sml = np.nanmean(theta_e[l_i])
+#         theta_e_bzi = np.nanmean(theta_e[u_i])
+#         theta_e_uzi = np.nanmean(theta_e[l_ft])
+
+#         theta_l_sml = np.nanmean(theta_l[l_i])
+#         theta_l_bzi = np.nanmean(theta_l[u_i])
+#         theta_l_uzi = np.nanmean(theta_l[l_ft])
+    
+#         qt_sml = np.nanmean(qt[l_i])
+#         qt_bzi = np.nanmean(qt[u_i])
+#         qt_uzi = np.nanmean(qt[l_ft])
+
+#     d_theta_e = theta_e_bzi - theta_e_sml
+#     d_theta_l = theta_l_bzi - theta_l_sml
+#     d_qt = qt_bzi - qt_sml
+    
+#     alpha_thetal = (theta_l_bzi - theta_l_sml)/(theta_l_uzi - theta_l_sml)
+#     alpha_qt = (qt_bzi - qt_sml)/(qt_uzi - qt_sml)
+#     alpha_thetae = (theta_e_bzi - theta_e_sml)/(theta_e_uzi - theta_e_sml)
+    
+#     # getting jumps across the inversion, old-fashioned way. bad for fuzzy inversions
+# #     z_inv = inv_layer_from_sounding(sounding_dict)['z_mid']
+
+# #     i_below_inv = np.logical_and(z > z_inv-200, z < z_inv)
+# #     i_above_inv = np.logical_and(z > z_inv, z < z_inv+200)
+# #     q_below_inv = np.nanmax(qt[i_below_inv])
+# #     q_above_inv = np.nanmin(qt[i_above_inv])
+# #     d_q_inv = q_above_inv - q_below_inv
+    
+# #     t_below_inv = np.nanmin(theta[i_below_inv])
+# #     t_above_inv = np.nanmax(theta[i_above_inv])
+# #     d_t_inv = t_above_inv - t_below_inv
+    
+    
+#     if get_jumps:
+#         ### moist adiabatic way
+#         gamma_moist = get_moist_adiabatic_lapse_rate(T=t, p=p)*1000
+#         if smooth_t:
+#             gamma = -np.gradient(smooth(t, window_len=31), z)*1000
+#         else: 
+#             gamma = -np.gradient(t, z)*1000
+#         gamma[np.gradient(z)>-1] = np.nan
+#         gamma[z<330] = np.nan
+#         gamma[z>3000] = np.nan
+#         gamma[np.abs(gamma)>100] = np.nan
+#         gamma_diff = (gamma-gamma_moist)/1000
+# #         import matplotlib.pyplot as plt
+# #         plt.plot(gamma, z)
+# #         plt.ylim([0, 3000])
+# #         raise ValueError('hahahah')
+#         i_mid = np.nanargmin(gamma)
+#         if np.isnan(i_mid):
+#             print('no i_mid')
+#             return buncha_nans
+#         z_mid = z[i_mid]
+#         max_gap = gamma[i_mid] - gamma_moist[i_mid]
+
+#     #     z_bot = np.max(z[np.logical_and(z<z[i_mid], gamma>gamma_moist)])
+#         try:
+#             z_bot = np.max(z[np.logical_and(z<z[i_mid], gamma-gamma_moist>max_gap/4)])
+#         except ValueError as v: # no crossing of the max_gap/4 line go for smallest gap below zmid
+#             cands = z<z[i_mid]
+#             if not np.any(cands):
+#                 raise ValueError("no values below inversion middle!")            
+#             z_bot = z[cands][np.argmin(np.abs(gamma[cands]-gamma_moist[cands]))]
+#             i_bot = np.argwhere(z==z_bot)[0][0]
+            
+
+#         i_bot = np.argwhere(z==z_bot)[0][0]
+
+#         top_candidates = np.logical_and(z>z[i_mid], gamma-gamma_moist>max_gap/4)
+#         if np.any(top_candidates):
+#             z_top = np.min(z[top_candidates])
+#             i_top = np.argwhere(z==z_top)[0][0]
+#         else: 
+#             cands = z>z[i_mid]
+#             if not np.any(cands):
+#                 import matplotlib.pyplot as plt
+#                 plt.plot(theta, z)
+#                 plt.figure()
+#                 plt.plot(gamma, z)
+#                 raise ValueError("no values above inversion middle!")
+
+#             z_top = z[cands][np.argmin(np.abs(gamma[cands]-gamma_moist[cands]))]
+#             i_top = np.argwhere(z==z_top)[0][0]
+
+#         i_upper = np.logical_and(z<=z_top, z>=z_mid)
+#         if np.sum(i_upper) == 0:
+#             print("error: no upper inv layer: z_top: {}  z_mid: {}".format(z_top, z_mid))
+#             return buncha_nans
+#         i_lower = np.logical_and(z>z_bot, z<z_mid)
+
+#         q_above_inv = qt[i_top]
+#         q_below_inv = qt[i_bot]
+#         d_q_inv = q_above_inv - q_below_inv
+
+#         t_below_inv = t[i_bot]
+#         i_inv = np.logical_and(z>z_bot, z<z_top)
+
+#         d_t_inv = integrate.trapz(gamma_diff[i_inv], z[i_inv])
+#         t_above_inv = t_below_inv + d_t_inv
+#     else:
+#         i_bot, i_mid, i_top, z_bot, z_mid, z_top, q_above_inv, q_below_inv, t_above_inv, t_below_inv, d_q_inv, d_t_inv = np.nan, \
+#             np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
+        
+        
+#     return{"d_qt": d_qt, "d_theta_e": d_theta_e, 'd_theta_l': d_theta_l,
+#            "alpha_thetal": alpha_thetal, "alpha_qt":alpha_qt, "alpha_thetae": alpha_thetae,
+#            "d_q_inv": d_q_inv, "d_t_inv": d_t_inv, 
+#            "t_below_inv": t_below_inv, "t_above_inv": t_above_inv, "q_below_inv": q_below_inv, "q_above_inv": q_above_inv,
+#            "z_top": z_top, "z_mid": z_mid, "z_bot": z_bot, "i_top": i_top, "i_mid": i_mid, "i_bot": i_bot }
+
+# def DEC_calc_zi_from_sounding(sounding_dict):
+#     z = sounding_dict['GGALT']
+#     theta = sounding_dict['THETA']
+#     RH = sounding_dict['RHUM']
+#     T = sounding_dict['ATX']
+#     zi_dict = {}
+# #    zi_dict['Rich'] = mu.Ri_pbl_ht(u, v, q, T, z, smooth=True)
+#     zi_dict['RH50'] = RH_50_pblht_1d(z, RH)
+#     zi_dict['RHCB'] = RH_fancy_pblht_1d(z, RH)
+#     zi_dict['Heff'] = heffter_pblht_1D(z, theta)
+#     zi_dict['Heff']['T_bot'] = T[zi_dict['Heff']['i_bot']]
+#     zi_dict['Heff']['T_top'] = T[zi_dict['Heff']['i_top']]
+#     zi_dict['lat'] = np.nanmean(sounding_dict['GGLAT'])
+#     zi_dict['lon'] = np.nanmean(sounding_dict['GGLON'])
+#     zi_dict['time'] = sounding_dict['TIME'][0]
+#     zi_dict['lon_p'] = -140 + 0.8*(zi_dict['lon']+140) + 0.4*(zi_dict['lat']-30)   
+#     return zi_dict
+
+
+    
+def DEC_heffter_pblht_1D(z, theta, find_top=False):
 
     def moving_average(a, n=3):
         ret = np.cumsum(a, dtype=float)
@@ -429,281 +888,21 @@ def heffter_pblht_1D(z, theta, find_top=False):
         return {"z_top": z_max, "theta_top": theta_max, "i_top": i_max,
                 "z_bot": z_max, "theta_bot": theta_max, "i_bot": i_max,
                 "inversion": False}
+def DEC_heffter_pblht_2d(z, theta, axis=0, handle_nans=False):
+    dummy = heffter_pblht_1D(np.arange(100), np.arange(100))
+    res_dict = {key: np.empty(z.shape[axis]) for key in dummy.keys()}
 
-def inv_layer_from_sounding(sounding):
-    rh = sounding['RHUM']
-    z = sounding['GGALT']
-    
-    
-    i_above_inv = np.where(rh<60)[0]
-    z_above_inv = z[i_above_inv]
-    if np.any(i_above_inv):
-        z_mid = np.min(z_above_inv)
-    else:
-        z_mid = np.nan
-    return {'z_mid': z_mid}
-    
-def calc_decoupling_from_sounding(sounding_dict, usetheta=False, get_jumps=True, smooth_t=True):
-    z = sounding_dict['GGALT']
-    theta = sounding_dict['THETA']
-    theta_e = sounding_dict['THETAE']
-    qv = sounding_dict['QV']
-    t = sounding_dict['ATX']
-    if 'PSXC' in sounding_dict.keys():
-        p = sounding_dict['PSXC']
-    else:
-        p = sounding_dict['PSX']
-
-    if not usetheta:
-        theta_l = sounding_dict['THETAL']
-        ql = sounding_dict['QL']
-        if np.all(np.isnan(ql)):
-            qt = qv
-        else:
-            qt = qv + ql
-    else:
-        theta_l = sounding_dict['THETA']
-        qt = qv
-
-        
-        
-    zi = heffter_pblht_1D(z, theta)
-
-    
-    upper_25 = zi['z_bot'] - (zi['z_bot'] - min(z))/4.
-    u_i = np.logical_and(z > upper_25, z < zi['z_bot'])
-    lower_25 = min(z) + (zi['z_bot'] - min(z))/4.
-    l_i = np.logical_and(z < lower_25, z > min(z))
-    
-    ft_base = zi['z_bot']+500
-    ft_top = ft_base + 500
-    l_ft = np.logical_and(z < ft_top, z > ft_base)
-    
-    buncha_nans = {"d_qt": np.nan, "d_theta_e": np.nan, "d_theta_l": np.nan,
-                "alpha_thetal": np.nan, "alpha_qt":np.nan, "alpha_thetae": np.nan,
-                "d_q_inv": np.nan, "d_t_inv": np.nan,
-                "t_below_inv": np.nan, "t_above_inv": np.nan, "q_below_inv": np.nan, "q_above_inv": np.nan,
-                "z_top": np.nan, "z_mid": np.nan, "z_bot": np.nan, "i_top": np.nan, "i_mid": np.nan, "i_bot": np.nan}
-    if zi['z_bot'] - min(z) < 300 or np.sum(l_ft) == 0:
-        return buncha_nans
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        theta_e_sml = np.nanmean(theta_e[l_i])
-        theta_e_bzi = np.nanmean(theta_e[u_i])
-        theta_e_uzi = np.nanmean(theta_e[l_ft])
-
-        theta_l_sml = np.nanmean(theta_l[l_i])
-        theta_l_bzi = np.nanmean(theta_l[u_i])
-        theta_l_uzi = np.nanmean(theta_l[l_ft])
-    
-        qt_sml = np.nanmean(qt[l_i])
-        qt_bzi = np.nanmean(qt[u_i])
-        qt_uzi = np.nanmean(qt[l_ft])
-
-    d_theta_e = theta_e_bzi - theta_e_sml
-    d_theta_l = theta_l_bzi - theta_l_sml
-    d_qt = qt_bzi - qt_sml
-    
-    alpha_thetal = (theta_l_bzi - theta_l_sml)/(theta_l_uzi - theta_l_sml)
-    alpha_qt = (qt_bzi - qt_sml)/(qt_uzi - qt_sml)
-    alpha_thetae = (theta_e_bzi - theta_e_sml)/(theta_e_uzi - theta_e_sml)
-    
-    # getting jumps across the inversion, old-fashioned way. bad for fuzzy inversions
-#     z_inv = inv_layer_from_sounding(sounding_dict)['z_mid']
-
-#     i_below_inv = np.logical_and(z > z_inv-200, z < z_inv)
-#     i_above_inv = np.logical_and(z > z_inv, z < z_inv+200)
-#     q_below_inv = np.nanmax(qt[i_below_inv])
-#     q_above_inv = np.nanmin(qt[i_above_inv])
-#     d_q_inv = q_above_inv - q_below_inv
-    
-#     t_below_inv = np.nanmin(theta[i_below_inv])
-#     t_above_inv = np.nanmax(theta[i_above_inv])
-#     d_t_inv = t_above_inv - t_below_inv
-    
-    
-    if get_jumps:
-        ### moist adiabatic way
-        gamma_moist = get_moist_adiabatic_lapse_rate(T=t, p=p)*1000
-        if smooth_t:
-            gamma = -np.gradient(smooth(t, window_len=31), z)*1000
-        else: 
-            gamma = -np.gradient(t, z)*1000
-        gamma[np.gradient(z)>-1] = np.nan
-        gamma[z<330] = np.nan
-        gamma[z>3000] = np.nan
-        gamma[np.abs(gamma)>100] = np.nan
-        gamma_diff = (gamma-gamma_moist)/1000
-#         import matplotlib.pyplot as plt
-#         plt.plot(gamma, z)
-#         plt.ylim([0, 3000])
-#         raise ValueError('hahahah')
-        i_mid = np.nanargmin(gamma)
-        if np.isnan(i_mid):
-            print('no i_mid')
-            return buncha_nans
-        z_mid = z[i_mid]
-        max_gap = gamma[i_mid] - gamma_moist[i_mid]
-
-    #     z_bot = np.max(z[np.logical_and(z<z[i_mid], gamma>gamma_moist)])
+    result = np.empty(z.shape[axis])
+    for i,(z_i,theta_i) in enumerate(zip(z, theta)):
         try:
-            z_bot = np.max(z[np.logical_and(z<z[i_mid], gamma-gamma_moist>max_gap/4)])
-        except ValueError as v: # no crossing of the max_gap/4 line go for smallest gap below zmid
-            cands = z<z[i_mid]
-            if not np.any(cands):
-                raise ValueError("no values below inversion middle!")            
-            z_bot = z[cands][np.argmin(np.abs(gamma[cands]-gamma_moist[cands]))]
-            i_bot = np.argwhere(z==z_bot)[0][0]
-            
-
-        i_bot = np.argwhere(z==z_bot)[0][0]
-
-        top_candidates = np.logical_and(z>z[i_mid], gamma-gamma_moist>max_gap/4)
-        if np.any(top_candidates):
-            z_top = np.min(z[top_candidates])
-            i_top = np.argwhere(z==z_top)[0][0]
-        else: 
-            cands = z>z[i_mid]
-            if not np.any(cands):
-                import matplotlib.pyplot as plt
-                plt.plot(theta, z)
-                plt.figure()
-                plt.plot(gamma, z)
-                raise ValueError("no values above inversion middle!")
-
-            z_top = z[cands][np.argmin(np.abs(gamma[cands]-gamma_moist[cands]))]
-            i_top = np.argwhere(z==z_top)[0][0]
-
-        i_upper = np.logical_and(z<=z_top, z>=z_mid)
-        if np.sum(i_upper) == 0:
-            print("error: no upper inv layer: z_top: {}  z_mid: {}".format(z_top, z_mid))
-            return buncha_nans
-        i_lower = np.logical_and(z>z_bot, z<z_mid)
-
-        q_above_inv = qt[i_top]
-        q_below_inv = qt[i_bot]
-        d_q_inv = q_above_inv - q_below_inv
-
-        t_below_inv = t[i_bot]
-        i_inv = np.logical_and(z>z_bot, z<z_top)
-
-        d_t_inv = integrate.trapz(gamma_diff[i_inv], z[i_inv])
-        t_above_inv = t_below_inv + d_t_inv
-    else:
-        i_bot, i_mid, i_top, z_bot, z_mid, z_top, q_above_inv, q_below_inv, t_above_inv, t_below_inv, d_q_inv, d_t_inv = np.nan, \
-            np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
-        
-        
-    return{"d_qt": d_qt, "d_theta_e": d_theta_e, 'd_theta_l': d_theta_l,
-           "alpha_thetal": alpha_thetal, "alpha_qt":alpha_qt, "alpha_thetae": alpha_thetae,
-           "d_q_inv": d_q_inv, "d_t_inv": d_t_inv, 
-           "t_below_inv": t_below_inv, "t_above_inv": t_above_inv, "q_below_inv": q_below_inv, "q_above_inv": q_above_inv,
-           "z_top": z_top, "z_mid": z_mid, "z_bot": z_bot, "i_top": i_top, "i_mid": i_mid, "i_bot": i_bot }
-
-def calc_zi_from_sounding(sounding_dict):
-    z = sounding_dict['GGALT']
-    theta = sounding_dict['THETA']
-    RH = sounding_dict['RHUM']
-    T = sounding_dict['ATX']
-    zi_dict = {}
-#    zi_dict['Rich'] = mu.Ri_pbl_ht(u, v, q, T, z, smooth=True)
-    zi_dict['RH50'] = RH_50_pblht_1d(z, RH)
-    zi_dict['RHCB'] = RH_fancy_pblht_1d(z, RH)
-    zi_dict['Heff'] = heffter_pblht_1D(z, theta)
-    zi_dict['Heff']['T_bot'] = T[zi_dict['Heff']['i_bot']]
-    zi_dict['Heff']['T_top'] = T[zi_dict['Heff']['i_top']]
-    zi_dict['lat'] = np.nanmean(sounding_dict['GGLAT'])
-    zi_dict['lon'] = np.nanmean(sounding_dict['GGLON'])
-    zi_dict['time'] = sounding_dict['TIME'][0]
-    zi_dict['lon_p'] = -140 + 0.8*(zi_dict['lon']+140) + 0.4*(zi_dict['lat']-30)   
-    return zi_dict
-
-def calc_decoupling_and_zi_from_flight_data(flight_data, usetheta=False):
-    
-    var_list = ['GGLAT', 'GGLON', 'GGALT', 'RHUM', 'ATX', 'MR', 'THETAE', 'THETA', 'PSX', 'DPXC', 'PLWCC']    
-    
-    
-    sounding_dict = {}
-    sounding_dict['TIME'] = flight_data.time.values
-    for i in var_list:
-        sounding_dict[i] = flight_data[i].values
-    if 'ATX' in var_list:
-        sounding_dict['ATX'] = sounding_dict['ATX'] + 273.15
-    sounding_dict['DENS'] = density_from_p_Tv(flight_data['PSX'].values*100, flight_data['TVIR'].values+273.15)  
-    sounding_dict['QL'] = flight_data['PLWCC'].values/sounding_dict['DENS']
-    sounding_dict['THETAL'] = get_liquid_water_theta(
-        sounding_dict['ATX'], sounding_dict['THETA'], sounding_dict['QL'])
-    sounding_dict['QV'] = flight_data['MR'].values/(1+flight_data['MR'].values/1000)
-    
-    decoupling_dict = calc_decoupling_from_sounding(sounding_dict, usetheta=usetheta)
-    zi_dict = calc_zi_from_sounding(sounding_dict)
-    return {**decoupling_dict, **zi_dict}
-
-def calculate_LTS(t_700, t_1000):
-    """calculate lower tropospheric stability
-    t_700: 700 hPa temperature in Kelvin
-    t_1000: 1000 hPa temperature in Kelvin
-    
-    returns: lower tropospheric stability in Kelvin
-    """
-    theta_700 = theta_from_p_t(p=700.0, t=t_700)
-    lts = theta_700-t_1000
-    return lts
-    
-    
-def calculate_moist_adiabatic_lapse_rate(t, p): 
-    """calculate moist adiabatic lapse rate from pressure, temperature
-    p: pressure in hPa
-    t: temperature in Kelvin
-    
-    returns: moist adiabatic lapse rate in Kelvin/m
-    """
-    es = 611.2*np.exp(17.67*(t-273.15)/(t-29.65)) # Bolton formula, es in Pa
-    qs = 0.622*es/(p*100-0.378*es)
-    num = 1 + lv*qs/(Rdry*t)
-    denom = 1 + lv**2*qs/(cp*Rvap*t**2)
-    gamma = g/cp*(1-num/denom)
-    return gamma
-    
-def theta_from_p_t(p, t, p0=1000.0):
-    """calculate potential temperature from pressure, temperature
-    p: pressure in hPa
-    t: temperature in Kelvin
-    
-    returns: potential temperature in Kelvin
-    """
-    theta = t * (p0/p)**(Rdry/cp)
-    return theta
-
-
-def calculate_LCL(t, t_dew, z=0.0):
-    """calculate lifting condensation level from temperature, dew point, and altitude
-    t: temperature in Kelvin
-    t_dew: dew point temperature in Kelvin
-    z: geopotential height in meters. defaults to 0
-    
-    returns: lifting condensation level in meters
-    
-    raises: ValueError if any dew points are above temperatures (supersaturation)
-    """
-    if np.any(t_dew > t):
-        t_dew = np.minimum(t, t_dew)
-#         raise ValueError('dew point temp above temp, that\'s bananas')
-    return z + 125*(t - t_dew)
-
-def calculate_EIS(t_1000, t_850, t_700, z_1000, z_700, r_1000):
-    """calculate estimated inversion strength from temperatures, heights, relative humidities
-    t_1000, t_850, t_700: temperature in Kelvin at 1000, 850, and 700 hPa
-    z_1000, z_700: geopotential height in meters at 1000 and 700 hPa
-    r_1000: relative humidity in % at 1000 hPa
-    
-    returns: estimated inversion strength (EIS) in Kelvin
-    """
-    if hasattr(r_1000, '__iter__'):
-        r_1000[r_1000>100] = 100  # ignoring supersaturation for lcl calculation
-    t_dew = t_1000-(100-r_1000)/5.0
-    lcl = calculate_LCL(t=t_1000, t_dew=t_dew, z=z_1000)
-    lts = calculate_LTS(t_700=t_700, t_1000=t_1000)
-    gamma_850 = calculate_moist_adiabatic_lapse_rate(t=t_850, p=850)
-    eis = lts - gamma_850*(z_700-lcl)
-    return eis
+            res = heffter_pblht_1D(z_i,theta_i)
+        except ValueError as e:
+            if handle_nans:
+                res = {"z_top": float('nan'), "theta_top": float('nan'), "i_top": float('nan'),
+                "z_bot": float('nan'), "theta_bot": float('nan'), "i_bot": float('nan'),
+                "inversion": False}
+            else:
+                raise e
+        for key, value in res.items():
+            res_dict[key][i] = value
+    return res_dict
